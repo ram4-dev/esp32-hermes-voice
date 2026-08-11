@@ -1,0 +1,43 @@
+menu "ESP32 Voice Agent"
+
+config VOICE_WIFI_SSID
+    string "Wi-Fi SSID"
+    default ""
+
+config VOICE_WIFI_PASSWORD
+    string "Wi-Fi password"
+    default ""
+
+config VOICE_BRIDGE_URL
+    string "Voice bridge base URL"
+    default "https://voice.local"
+    help
+        Base URL only, without /v1/voice/jobs.
+
+config VOICE_DEVICE_ID
+    string "Device ID"
+    default "esp32-voice-01"
+
+config VOICE_DEVICE_TOKEN
+    string "Device bearer token"
+    default "replace-me"
+
+config VOICE_BRIDGE_EMBED_LOCAL_CA
+    bool "Embed a private/local root CA"
+    default n
+    help
+        Enable for Caddy's internal CA or another private PKI. Copy its PEM
+        certificate to main/certs/server_root_ca.pem before building. When
+        disabled, the ESP-IDF public certificate bundle is used.
+
+config VOICE_MAX_RECORDING_SECONDS
+    int "Maximum recording duration"
+    range 1 30
+    default 30
+
+config VOICE_POLL_TIMEOUT_SECONDS
+    int "Maximum time to wait for STT and Hermes"
+    range 30 600
+    default 180
+
+endmenu

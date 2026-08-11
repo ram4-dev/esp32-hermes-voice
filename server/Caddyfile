@@ -1,0 +1,5 @@
+voice.local {
+    tls internal
+    encode zstd gzip
+    reverse_proxy bridge:8787
+}
