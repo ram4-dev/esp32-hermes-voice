@@ -20,5 +20,6 @@ typedef struct {
 
 esp_err_t audio_recorder_init(void);
 esp_err_t audio_recorder_start(const audio_recorder_callbacks_t *callbacks);
+esp_err_t audio_recorder_pause(void);
 void audio_recorder_stop(void);
 bool audio_recorder_is_recording(void);

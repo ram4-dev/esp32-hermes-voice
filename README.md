@@ -67,6 +67,10 @@ docker compose ps
 curl --resolve voice.local:443:PROXMOX_VM_IP https://voice.local/health
 ```
 
+The firmware defaults to the official Tailscale Funnel endpoint
+`https://hermes-server.tailfb789f.ts.net:8443`. Keep that endpoint as the
+primary remote URL; a LAN URL is only a local-development override.
+
 Create a local DNS entry so `voice.local` resolves to the VM/LXC address from
 the Wi-Fi network used by the ESP32. A static DHCP lease is recommended.
 
@@ -96,14 +100,20 @@ idf.py menuconfig
 
 Under **ESP32 Voice Agent**, configure:
 
-- Wi-Fi SSID and password.
-- `https://voice.local` as the bridge base URL.
+    - `VOICE_WIFI_PRIMARY_SSID` / `VOICE_WIFI_PRIMARY_PASSWORD`.
+    - `VOICE_WIFI_SECONDARY_SSID` / `VOICE_WIFI_SECONDARY_PASSWORD` for fallback.
+    - Keep `https://hermes-server.tailfb789f.ts.net:8443` as the bridge base URL.
+      A LAN URL is allowed only in ignored local `sdkconfig.defaults.local` for
+      development.
+
 - The device ID from `VOICE_DEVICE_TOKENS`.
 - The matching device token.
 - **Embed a private/local root CA**.
 - Speaker volume (ES8311): `65` by default.
 
-`sdkconfig` and the real CA certificate are intentionally ignored by Git.
+`sdkconfig`, `sdkconfig.defaults.local`, and the real CA certificate are
+intentionally ignored by Git. Put all Wi-Fi passwords and the device token only
+in those local files; never add them to tracked defaults or source.
 
 Build, flash, and inspect the serial log:
 
@@ -119,13 +129,19 @@ power-cycle it while holding `BOOT`.
 
 1. Hold the circular control to record.
 2. Release it to create and upload a 16 kHz, mono, 16-bit PCM WAV.
-3. The screen advances through upload, transcription, Hermes, and
+3. Use **VOL** to change the speaker volume; the selected value is persisted in NVS.
+   **AUDIO ON/OFF** disables only speech playback and always preserves transcript and
+   answer text.
+4. **CANCELAR** is visible during recording, upload, remote waiting, and playback.
+   It aborts the active operation, releases its resources, ignores late callbacks,
+   and returns to a recording-ready idle screen.
+5. The screen advances through upload, transcription, Hermes, and
    **Sintetizando** states.
-4. The transcript and Hermes answer appear in a scrollable view while the
+6. The transcript and Hermes answer appear in a scrollable view while the
    normalized WAV is downloaded in streaming chunks to the ES8311 speaker.
-5. **Reproduciendo** keeps the text visible. Pressing the record control stops
+7. **Reproduciendo** keeps the text visible. Pressing the record control stops
    playback (barge-in) and starts a new recording.
-6. If Kokoro or audio download fails, the text answer remains available and
+8. If Kokoro or audio download fails, the text answer remains available and
    **REINTENTAR** retries only the authenticated speech download. If upload
    fails, the original WAV remains in PSRAM and the same idempotency key is
    retried.

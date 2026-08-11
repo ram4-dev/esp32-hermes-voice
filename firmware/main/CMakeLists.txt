@@ -5,6 +5,7 @@ idf_component_register(
         "audio_player.c"
         "voice_client.c"
         "voice_ui.c"
+        "voice_font_20.c"
         "wav.c"
         "wifi_manager.c"
     INCLUDE_DIRS "."

@@ -14,6 +14,7 @@ typedef enum {
 } voice_remote_status_t;
 
 typedef void (*voice_status_cb_t)(voice_remote_status_t status, void *context);
+typedef bool (*voice_cancel_cb_t)(void *context);
 
 typedef struct {
     char transcript[2048];
@@ -29,13 +30,16 @@ int voice_client_run(
     const char *request_id,
     voice_status_cb_t status_callback,
     void *status_context,
+    voice_cancel_cb_t cancel_callback,
+    void *cancel_context,
     voice_client_result_t *result);
 
-/* Download and play only the already-created speech for a completed job. */
 int voice_client_play_speech(
     const char *request_id,
     voice_status_cb_t status_callback,
     void *status_context,
+    voice_cancel_cb_t cancel_callback,
+    void *cancel_context,
     char *error,
     size_t error_capacity);
 

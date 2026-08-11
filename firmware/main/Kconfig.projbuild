@@ -1,18 +1,29 @@
 menu "ESP32 Voice Agent"
 
-config VOICE_WIFI_SSID
-    string "Wi-Fi SSID"
+config VOICE_WIFI_PRIMARY_SSID
+    string "Primary Wi-Fi SSID"
+    default "Ramiro-2.4Ghz"
+    help
+        Configure in sdkconfig.defaults.local. Never commit the local value.
+
+config VOICE_WIFI_PRIMARY_PASSWORD
+    string "Primary Wi-Fi password"
     default ""
 
-config VOICE_WIFI_PASSWORD
-    string "Wi-Fi password"
+config VOICE_WIFI_SECONDARY_SSID
+    string "Fallback Wi-Fi SSID"
+    default "Rama"
+
+config VOICE_WIFI_SECONDARY_PASSWORD
+    string "Fallback Wi-Fi password"
     default ""
 
 config VOICE_BRIDGE_URL
     string "Voice bridge base URL"
-    default "https://voice.local"
+    default "https://hermes-server.tailfb789f.ts.net:8443"
     help
-        Base URL only, without /v1/voice/jobs.
+        The official remote endpoint. A LAN URL may be supplied only in a local
+        sdkconfig override for development.
 
 config VOICE_DEVICE_ID
     string "Device ID"
@@ -21,14 +32,15 @@ config VOICE_DEVICE_ID
 config VOICE_DEVICE_TOKEN
     string "Device bearer token"
     default "replace-me"
+    help
+        Configure locally; never commit a real token.
 
 config VOICE_BRIDGE_EMBED_LOCAL_CA
     bool "Embed a private/local root CA"
     default n
     help
-        Enable for Caddy's internal CA or another private PKI. Copy its PEM
-        certificate to main/certs/server_root_ca.pem before building. When
-        disabled, the ESP-IDF public certificate bundle is used.
+        Enable for a private PKI. The public Tailscale Funnel endpoint uses the
+        ESP-IDF certificate bundle by default.
 
 config VOICE_MAX_RECORDING_SECONDS
     int "Maximum recording duration"
@@ -41,10 +53,10 @@ config VOICE_POLL_TIMEOUT_SECONDS
     default 180
 
 config VOICE_AUDIO_VOLUME
-    int "Speaker volume"
+    int "Initial speaker volume"
     range 0 100
     default 65
-        help
-            ES8311 speaker volume. 65 is the board-safe default.
+    help
+        Initial value only. The button persists the current volume in NVS.
 
 endmenu
