@@ -1,5 +1,15 @@
 menu "MicroLink V2 Configuration"
 
+    # Noise IK uses the mbedTLS ChaCha20-Poly1305 implementation directly.
+    # Keep these hidden requirements forced on even when menuconfig starts
+    # from an existing sdkconfig that disabled the individual primitives.
+    config ML_MBEDTLS_CHACHAPOLY_REQUIRED
+        bool
+        default y
+        select MBEDTLS_CHACHA20_C
+        select MBEDTLS_POLY1305_C
+        select MBEDTLS_CHACHAPOLY_C
+
     config ML_ZERO_COPY_WG
         bool "Enable zero-copy WireGuard receive"
         default n

@@ -19,6 +19,12 @@ def test_microlink_contract_is_wifi_only_and_bounded() -> None:
     assert 'CONFIG_ML_JSON_BUFFER_SIZE_KB=64' in defaults
     assert 'CONFIG_ML_DEVICE_NAME="esp32-hermes"' in defaults
     assert 'CONFIG_ML_TAILSCALE_AUTH_KEY=""' in defaults
+    assert 'CONFIG_MBEDTLS_CHACHA20_C=y' in defaults
+    assert 'CONFIG_MBEDTLS_POLY1305_C=y' in defaults
+    assert 'CONFIG_MBEDTLS_CHACHAPOLY_C=y' in defaults
+    assert 'select MBEDTLS_CHACHA20_C' in kconfig
+    assert 'select MBEDTLS_POLY1305_C' in kconfig
+    assert 'select MBEDTLS_CHACHAPOLY_C' in kconfig
     internal = (COMPONENT / "include/microlink_internal.h").read_text()
     assert '"derp11e.tailscale.com"' in internal
     assert 'derp9' not in internal
