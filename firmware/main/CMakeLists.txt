@@ -2,12 +2,14 @@ idf_component_register(
     SRCS
         "app_main.c"
         "audio_recorder.c"
+        "audio_player.c"
         "voice_client.c"
         "voice_ui.c"
         "wav.c"
         "wifi_manager.c"
     INCLUDE_DIRS "."
     REQUIRES
+        esp_codec_dev
         esp_event
         esp_http_client
         esp_netif

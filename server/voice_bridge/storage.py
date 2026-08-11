@@ -5,7 +5,7 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
-from .models import JobRecord, JobStatus
+from .models import JobRecord, JobStatus, TTSStatus
 
 
 def _now() -> str:
@@ -34,6 +34,9 @@ class Storage:
                     audio_path TEXT,
                     transcript TEXT,
                     answer TEXT,
+                    speech_path TEXT,
+                    tts_status TEXT NOT NULL DEFAULT 'pending',
+                    tts_error TEXT,
                     error TEXT,
                     hermes_session_id TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -42,6 +45,25 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS jobs_device_id_idx ON jobs(device_id);
                 """
             )
+            self._add_column_if_missing(
+                "jobs", "speech_path", "ALTER TABLE jobs ADD COLUMN speech_path TEXT"
+            )
+            self._add_column_if_missing(
+                "jobs",
+                "tts_status",
+                "ALTER TABLE jobs ADD COLUMN tts_status TEXT NOT NULL DEFAULT 'pending'",
+            )
+            self._add_column_if_missing(
+                "jobs", "tts_error", "ALTER TABLE jobs ADD COLUMN tts_error TEXT"
+            )
+
+    def _add_column_if_missing(self, table: str, column: str, statement: str) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            self._connection.execute(statement)
 
     def close(self) -> None:
         with self._lock:
@@ -110,8 +132,12 @@ class Storage:
         *,
         transcript: str | None = None,
         answer: str | None = None,
+        speech_path: str | None = None,
+        tts_status: TTSStatus | None = None,
+        tts_error: str | None = None,
         error: str | None = None,
         clear_audio_path: bool = False,
+        clear_speech_path: bool = False,
     ) -> None:
         assignments = ["status = ?", "updated_at = ?"]
         values: list[str | None] = [status.value, _now()]
@@ -121,11 +147,22 @@ class Storage:
         if answer is not None:
             assignments.append("answer = ?")
             values.append(answer)
+        if speech_path is not None:
+            assignments.append("speech_path = ?")
+            values.append(speech_path)
+        if tts_status is not None:
+            assignments.append("tts_status = ?")
+            values.append(tts_status.value)
+        if tts_error is not None:
+            assignments.append("tts_error = ?")
+            values.append(tts_error)
         if error is not None:
             assignments.append("error = ?")
             values.append(error)
         if clear_audio_path:
             assignments.append("audio_path = NULL")
+        if clear_speech_path:
+            assignments.append("speech_path = NULL")
         values.append(request_id)
         with self._lock, self._connection:
             self._connection.execute(
@@ -137,25 +174,49 @@ class Storage:
             JobStatus.QUEUED.value,
             JobStatus.TRANSCRIBING.value,
             JobStatus.ASKING_HERMES.value,
+            JobStatus.SYNTHESIZING.value,
         )
         with self._lock, self._connection:
             rows = self._connection.execute(
-                "SELECT audio_path FROM jobs WHERE status IN (?, ?, ?)", active
+                f"SELECT audio_path, speech_path FROM jobs "
+                f"WHERE status IN ({','.join('?' for _ in active)})",
+                active,
             ).fetchall()
             self._connection.execute(
-                """
+                f"""
                 UPDATE jobs
-                SET status = ?, error = ?, audio_path = NULL, updated_at = ?
-                WHERE status IN (?, ?, ?)
+                SET status = ?, error = ?, audio_path = NULL, speech_path = NULL,
+                    tts_status = ?, updated_at = ?
+                WHERE status IN ({','.join('?' for _ in active)})
                 """,
                 (
                     JobStatus.FAILED.value,
                     "bridge restarted while the job was running",
+                    TTSStatus.FAILED.value,
                     _now(),
                     *active,
                 ),
             )
-        return [str(row["audio_path"]) for row in rows if row["audio_path"]]
+        paths: list[str] = []
+        for row in rows:
+            paths.extend(
+                str(path) for path in (row["audio_path"], row["speech_path"]) if path
+            )
+        return paths
+
+    def expire_speech_before(self, cutoff: str) -> list[str]:
+        with self._lock, self._connection:
+            rows = self._connection.execute(
+                "SELECT speech_path FROM jobs "
+                "WHERE tts_status = ? AND updated_at < ? AND speech_path IS NOT NULL",
+                (TTSStatus.READY.value, cutoff),
+            ).fetchall()
+            self._connection.execute(
+                "UPDATE jobs SET speech_path = NULL, tts_status = ? "
+                "WHERE tts_status = ? AND updated_at < ?",
+                (TTSStatus.EXPIRED.value, TTSStatus.READY.value, cutoff),
+            )
+        return [str(row["speech_path"]) for row in rows]
 
     @staticmethod
     def _to_record(row: sqlite3.Row) -> JobRecord:
@@ -166,6 +227,9 @@ class Storage:
             audio_path=row["audio_path"],
             transcript=row["transcript"],
             answer=row["answer"],
+            speech_path=row["speech_path"],
+            tts_status=TTSStatus(row["tts_status"] or TTSStatus.PENDING.value),
+            tts_error=row["tts_error"],
             error=row["error"],
             hermes_session_id=str(row["hermes_session_id"]),
         )

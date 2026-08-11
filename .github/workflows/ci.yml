@@ -23,6 +23,20 @@ jobs:
       - run: uv run ruff check voice_bridge tests
       - run: uv run pytest -q
       - run: docker build -t esp32-voice-bridge:ci .
+      - name: Smoke test health endpoint
+        run: |
+          docker run -d --name voice-bridge-ci -p 8787:8787 \
+            -e VOICE_DEVICE_TOKENS=device:test-token \
+            -e STT_BASE_URL=https://stt.invalid \
+            -e STT_API_KEY=test-stt-key \
+            -e HERMES_BASE_URL=http://hermes.invalid:8642 \
+            -e HERMES_API_KEY=test-hermes-key \
+            -e TTS_BASE_URL=https://tts.invalid \
+            -e TTS_API_KEY=test-tts-key \
+            esp32-voice-bridge:ci
+          trap 'docker rm -f voice-bridge-ci' EXIT
+          curl --fail --retry 15 --retry-all-errors --retry-delay 1 \
+            http://127.0.0.1:8787/health
 
   firmware:
     runs-on: ubuntu-latest
@@ -34,7 +48,7 @@ jobs:
           -v "$PWD/firmware:/project"
           -w /project
           espressif/idf:v5.5.4
-          bash -lc 'idf.py build'
+          bash -lc 'idf.py reconfigure && idf.py build'
 
   secrets:
     runs-on: ubuntu-latest

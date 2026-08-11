@@ -62,8 +62,8 @@ static void recorder_task(void *argument)
     esp_err_t result = ESP_OK;
     while (s_recording && used + OUTPUT_BYTES <= capacity) {
         int read_result = esp_codec_dev_read(s_microphone, input, INPUT_BYTES);
-        if (read_result != ESP_OK) {
-            ESP_LOGE(TAG, "microphone read failed: %d", read_result);
+        if (read_result != INPUT_BYTES) {
+            ESP_LOGE(TAG, "microphone read failed: %d/%d", read_result, INPUT_BYTES);
             result = ESP_FAIL;
             break;
         }

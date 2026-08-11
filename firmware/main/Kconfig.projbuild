@@ -36,8 +36,15 @@ config VOICE_MAX_RECORDING_SECONDS
     default 30
 
 config VOICE_POLL_TIMEOUT_SECONDS
-    int "Maximum time to wait for STT and Hermes"
+    int "Maximum time to wait for STT, Hermes, and speech"
     range 30 600
     default 180
+
+config VOICE_AUDIO_VOLUME
+    int "Speaker volume"
+    range 0 100
+    default 65
+        help
+            ES8311 speaker volume. 65 is the board-safe default.
 
 endmenu

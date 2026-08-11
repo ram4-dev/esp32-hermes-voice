@@ -8,9 +8,10 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
+from fastapi.responses import FileResponse
 
 from .audio import InvalidAudio, inspect_wav
-from .clients import HermesClient, STTClient
+from .clients import HermesClient, STTClient, TTSClient
 from .config import Settings
 from .models import HealthView, JobAccepted, JobView
 from .service import VoiceService
@@ -24,12 +25,14 @@ def create_app(
     *,
     stt_client: STTClient | None = None,
     hermes_client: HermesClient | None = None,
+    tts_client: TTSClient | None = None,
 ) -> FastAPI:
     resolved = settings or Settings.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         resolved.audio_dir.mkdir(parents=True, exist_ok=True)
+        resolved.speech_dir.mkdir(parents=True, exist_ok=True)
         storage = Storage(resolved.database_path)
         for stale_path in storage.recover_interrupted():
             Path(stale_path).unlink(missing_ok=True)
@@ -46,18 +49,37 @@ def create_app(
             model=resolved.hermes_model,
             timeout=resolved.upstream_timeout_seconds,
         )
+        tts = tts_client or TTSClient(
+            base_url=resolved.tts_base_url,
+            api_key=resolved.tts_api_key,
+            model=resolved.tts_model,
+            voice=resolved.tts_voice,
+            speed=resolved.tts_speed,
+            timeout=resolved.upstream_timeout_seconds,
+            max_source_bytes=resolved.max_tts_source_bytes,
+        )
         app.state.settings = resolved
         app.state.storage = storage
-        app.state.service = VoiceService(storage=storage, stt=stt, hermes=hermes)
+        app.state.service = VoiceService(
+            storage=storage,
+            stt=stt,
+            hermes=hermes,
+            tts=tts,
+            speech_dir=resolved.speech_dir,
+            max_tts_seconds=resolved.max_tts_seconds,
+            speech_retention_seconds=resolved.speech_retention_seconds,
+        )
+        app.state.service.start_cleanup()
         try:
             yield
         finally:
             await app.state.service.shutdown()
             await stt.close()
             await hermes.close()
+            await tts.close()
             storage.close()
 
-    app = FastAPI(title="ESP32 Voice Bridge", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="ESP32 Voice Bridge", version="0.2.0", lifespan=lifespan)
 
     async def authenticate(
         authorization: str = Header(default=""),
@@ -143,7 +165,36 @@ def create_app(
             answer=answer,
             session_id=job.hermes_session_id,
             truncated=truncated,
+            tts_status=job.tts_status,
+            speech_url=(
+                f"/v1/voice/jobs/{job.request_id}/speech"
+                if job.tts_status.value == "ready" and job.speech_path
+                else None
+            ),
+            tts_error=job.tts_error,
             error=job.error,
+        )
+
+    @app.get("/v1/voice/jobs/{request_id}/speech", response_class=FileResponse)
+    async def get_voice_speech(
+        request_id: str, device_id: str = Depends(authenticate)
+    ) -> FileResponse:
+        app.state.service.cleanup_expired_speech()
+        job = app.state.storage.get_job(request_id)
+        if job is None or job.device_id != device_id:
+            raise HTTPException(status_code=404, detail="job not found")
+        if job.tts_status.value == "expired":
+            raise HTTPException(status_code=410, detail="speech expired")
+        if job.tts_status.value != "ready" or not job.speech_path:
+            raise HTTPException(status_code=409, detail="speech is not ready")
+        path = Path(job.speech_path)
+        if not path.is_file():
+            raise HTTPException(status_code=410, detail="speech is unavailable")
+        return FileResponse(
+            path,
+            media_type="audio/wav",
+            headers={"Cache-Control": "no-store"},
+            filename=f"{request_id}.wav",
         )
 
     @app.get("/health", response_model=HealthView)
@@ -154,16 +205,18 @@ def create_app(
             database="ok" if database_ok else "error",
             stt="configured",
             hermes="configured",
+            tts="configured",
         )
 
     @app.get("/health/deep", response_model=HealthView)
     async def deep_health(response: Response) -> HealthView:
-        database_ok, stt_ok, hermes_ok = await asyncio.gather(
+        database_ok, stt_ok, hermes_ok, tts_ok = await asyncio.gather(
             asyncio.to_thread(app.state.storage.health),
             app.state.service.stt.health(),
             app.state.service.hermes.health(),
+            app.state.service.tts.health(),
         )
-        all_ok = database_ok and stt_ok and hermes_ok
+        all_ok = database_ok and stt_ok and hermes_ok and tts_ok
         if not all_ok:
             response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
         return HealthView(
@@ -171,6 +224,7 @@ def create_app(
             database="ok" if database_ok else "error",
             stt="ok" if stt_ok else "error",
             hermes="ok" if hermes_ok else "error",
+            tts="ok" if tts_ok else "error",
         )
 
     return app

@@ -41,6 +41,24 @@ class FakeHermes:
         pass
 
 
+class FakeTTS:
+    def __init__(self, *, fail: bool = False):
+        self.fail = fail
+        self.calls: list[str] = []
+
+    async def synthesize(self, text: str) -> bytes:
+        self.calls.append(text)
+        if self.fail:
+            raise RuntimeError("Kokoro unavailable")
+        return make_wav(seconds=0.05, sample_rate=24_000)
+
+    async def health(self) -> bool:
+        return not self.fail
+
+    async def close(self) -> None:
+        pass
+
+
 def make_wav(seconds: float = 0.05, sample_rate: int = 16_000) -> bytes:
     output = io.BytesIO()
     with wave.open(output, "wb") as wav:
@@ -55,6 +73,7 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         database_path=tmp_path / "bridge.sqlite3",
         audio_dir=tmp_path / "audio",
+        speech_dir=tmp_path / "speech",
         device_tokens={"esp32-voice-01": "test-token"},
         stt_base_url="https://stt.invalid",
         stt_api_key="stt-secret",
@@ -63,6 +82,11 @@ def settings(tmp_path: Path) -> Settings:
         hermes_base_url="http://hermes.invalid:8642",
         hermes_api_key="hermes-secret",
         hermes_model="hermes-agent",
+        tts_base_url="https://tts.invalid",
+        tts_api_key="tts-secret",
+        tts_model="kokoro",
+        tts_voice="ef_dora",
+        tts_speed=1.0,
     )
 
 
@@ -90,7 +114,10 @@ def wait_for_completion(client: TestClient, request_id: str) -> dict:
 def test_voice_pipeline_and_audio_cleanup(tmp_path: Path) -> None:
     stt = FakeSTT()
     hermes = FakeHermes()
-    app = create_app(settings(tmp_path), stt_client=stt, hermes_client=hermes)
+    tts = FakeTTS()
+    app = create_app(
+        settings(tmp_path), stt_client=stt, hermes_client=hermes, tts_client=tts
+    )
     with TestClient(app) as client:
         response = client.post(
             "/v1/voice/jobs", headers=headers(), content=make_wav()
@@ -102,17 +129,30 @@ def test_voice_pipeline_and_audio_cleanup(tmp_path: Path) -> None:
         assert completed["transcript"] == "¿Cuál fue mi pregunta anterior?"
         assert completed["answer"] == "Esta es una respuesta breve de Hermes."
         assert completed["session_id"].startswith("voice-")
+        assert completed["tts_status"] == "ready"
+        assert completed["speech_url"] == "/v1/voice/jobs/request-12345678/speech"
         assert len(stt.calls) == 1
         assert hermes.calls == [
             ("¿Cuál fue mi pregunta anterior?", completed["session_id"])
         ]
+        assert tts.calls == ["Esta es una respuesta breve de Hermes."]
         assert list((tmp_path / "audio").glob("*.wav")) == []
+        speech = client.get(completed["speech_url"], headers=headers())
+        assert speech.status_code == 200
+        with wave.open(io.BytesIO(speech.content), "rb") as wav:
+            assert (wav.getnchannels(), wav.getsampwidth(), wav.getframerate()) == (
+                1,
+                2,
+                16_000,
+            )
 
 
 def test_request_id_is_idempotent_and_session_persists(tmp_path: Path) -> None:
     stt = FakeSTT()
     hermes = FakeHermes()
-    app = create_app(settings(tmp_path), stt_client=stt, hermes_client=hermes)
+    app = create_app(
+        settings(tmp_path), stt_client=stt, hermes_client=hermes, tts_client=FakeTTS()
+    )
     with TestClient(app) as client:
         first = client.post(
             "/v1/voice/jobs", headers=headers("first-request-01"), content=make_wav()
@@ -138,7 +178,12 @@ def test_request_id_is_idempotent_and_session_persists(tmp_path: Path) -> None:
 
 
 def test_rejects_bad_auth_and_invalid_audio(tmp_path: Path) -> None:
-    app = create_app(settings(tmp_path), stt_client=FakeSTT(), hermes_client=FakeHermes())
+    app = create_app(
+        settings(tmp_path),
+        stt_client=FakeSTT(),
+        hermes_client=FakeHermes(),
+        tts_client=FakeTTS(),
+    )
     with TestClient(app) as client:
         unauthorized = client.post(
             "/v1/voice/jobs",
@@ -154,7 +199,12 @@ def test_rejects_bad_auth_and_invalid_audio(tmp_path: Path) -> None:
 
 
 def test_rejects_wrong_audio_shape_and_oversize(tmp_path: Path) -> None:
-    app = create_app(settings(tmp_path), stt_client=FakeSTT(), hermes_client=FakeHermes())
+    app = create_app(
+        settings(tmp_path),
+        stt_client=FakeSTT(),
+        hermes_client=FakeHermes(),
+        tts_client=FakeTTS(),
+    )
     with TestClient(app) as client:
         wrong_rate = client.post(
             "/v1/voice/jobs",
@@ -173,7 +223,12 @@ def test_rejects_wrong_audio_shape_and_oversize(tmp_path: Path) -> None:
             "max_audio_bytes": 100,
         }
     )
-    app = create_app(configured, stt_client=FakeSTT(), hermes_client=FakeHermes())
+    app = create_app(
+        configured,
+        stt_client=FakeSTT(),
+        hermes_client=FakeHermes(),
+        tts_client=FakeTTS(),
+    )
     with TestClient(app) as client:
         oversized = client.post(
             "/v1/voice/jobs",
@@ -184,7 +239,12 @@ def test_rejects_wrong_audio_shape_and_oversize(tmp_path: Path) -> None:
 
 
 def test_health_endpoints(tmp_path: Path) -> None:
-    app = create_app(settings(tmp_path), stt_client=FakeSTT(), hermes_client=FakeHermes())
+    app = create_app(
+        settings(tmp_path),
+        stt_client=FakeSTT(),
+        hermes_client=FakeHermes(),
+        tts_client=FakeTTS(),
+    )
     with TestClient(app) as client:
         assert client.get("/health").json()["status"] == "ok"
         assert client.get("/health/deep").json() == {
@@ -192,4 +252,29 @@ def test_health_endpoints(tmp_path: Path) -> None:
             "database": "ok",
             "stt": "ok",
             "hermes": "ok",
+            "tts": "ok",
         }
+
+
+def test_tts_failure_falls_back_to_text(tmp_path: Path) -> None:
+    app = create_app(
+        settings(tmp_path),
+        stt_client=FakeSTT(),
+        hermes_client=FakeHermes(),
+        tts_client=FakeTTS(fail=True),
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/voice/jobs", headers=headers("tts-fallback-001"), content=make_wav()
+        )
+        assert response.status_code == 202
+        completed = wait_for_completion(client, "tts-fallback-001")
+        assert completed["status"] == "completed"
+        assert completed["answer"] == "Esta es una respuesta breve de Hermes."
+        assert completed["tts_status"] == "failed"
+        assert completed["speech_url"] is None
+        assert "Kokoro unavailable" in completed["tts_error"]
+        speech = client.get(
+            "/v1/voice/jobs/tts-fallback-001/speech", headers=headers()
+        )
+        assert speech.status_code == 409

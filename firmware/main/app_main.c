@@ -2,9 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio_player.h"
 #include "audio_recorder.h"
 #include "esp_check.h"
-#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
@@ -21,7 +21,9 @@ static SemaphoreHandle_t s_pending_lock;
 static uint8_t *s_pending_wav;
 static size_t s_pending_wav_bytes;
 static char s_pending_request_id[40];
-static bool s_uploading;
+static char s_cancelled_request_id[40];
+static voice_client_result_t s_last_result;
+static volatile bool s_uploading;
 
 static void make_request_id(char *target, size_t capacity)
 {
@@ -33,15 +35,74 @@ static void make_request_id(char *target, size_t capacity)
              (unsigned long)random_values[2], (unsigned long)random_values[3]);
 }
 
+static bool request_is_current(const char *request_id)
+{
+    bool current;
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    current = request_id != NULL && strcmp(s_pending_request_id, request_id) == 0;
+    xSemaphoreGive(s_pending_lock);
+    return current;
+}
+
+static bool request_was_cancelled(const char *request_id)
+{
+    bool cancelled;
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    cancelled = request_id != NULL && strcmp(s_cancelled_request_id, request_id) == 0;
+    xSemaphoreGive(s_pending_lock);
+    return cancelled;
+}
+
+static void clear_pending(bool clear_request_id)
+{
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    free(s_pending_wav);
+    s_pending_wav = NULL;
+    s_pending_wav_bytes = 0;
+    if (clear_request_id) {
+        s_pending_request_id[0] = '\0';
+    }
+    xSemaphoreGive(s_pending_lock);
+}
+
+static void release_uploaded_wav(const char *request_id)
+{
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    if (request_id != NULL && strcmp(s_pending_request_id, request_id) == 0) {
+        free(s_pending_wav);
+        s_pending_wav = NULL;
+        s_pending_wav_bytes = 0;
+    }
+    xSemaphoreGive(s_pending_lock);
+}
+
 static void remote_status_changed(voice_remote_status_t status, void *context)
 {
     (void)context;
-    if (status == VOICE_REMOTE_TRANSCRIBING) {
+    switch (status) {
+    case VOICE_REMOTE_TRANSCRIBING:
         voice_ui_show_working("Transcribiendo", "Convirtiendo tu voz a texto");
-    } else if (status == VOICE_REMOTE_ASKING_HERMES) {
+        break;
+    case VOICE_REMOTE_ASKING_HERMES:
         voice_ui_show_working("Pensando", "Hermes está trabajando");
-    } else {
+        break;
+    case VOICE_REMOTE_SYNTHESIZING:
+        voice_ui_show_working("Sintetizando", "Preparando la voz de Hermes");
+        break;
+    case VOICE_REMOTE_PLAYING:
+        voice_ui_show_playing("Audio de Hermes • presioná para interrumpir");
+        break;
+    case VOICE_REMOTE_QUEUED:
+    default:
         voice_ui_show_working("En cola", "Proxmox recibió el audio");
+        break;
+    }
+}
+
+static void finish_upload_task(const char *request_id)
+{
+    if (request_is_current(request_id)) {
+        s_uploading = false;
     }
 }
 
@@ -56,28 +117,82 @@ static void upload_task(void *argument)
     xSemaphoreGive(s_pending_lock);
 
     if (!wifi_manager_wait_connected(15000)) {
-        voice_ui_show_error("Sin conexión. El audio sigue listo para reintentar.", true);
-        s_uploading = false;
+        if (request_is_current(request_id)) {
+            voice_ui_show_error("Sin conexión. El audio sigue listo para reintentar.", true);
+            finish_upload_task(request_id);
+        }
         vTaskDelete(NULL);
         return;
     }
 
     voice_ui_show_working("Enviando", "Subiendo el WAV a Proxmox");
     voice_client_result_t result;
-    esp_err_t err = voice_client_run(wav, wav_bytes, request_id, remote_status_changed,
-                                     NULL, &result);
-    if (err == ESP_OK) {
-        voice_ui_show_response(result.transcript, result.answer, result.truncated);
-        xSemaphoreTake(s_pending_lock, portMAX_DELAY);
-        free(s_pending_wav);
-        s_pending_wav = NULL;
-        s_pending_wav_bytes = 0;
-        s_pending_request_id[0] = '\0';
-        xSemaphoreGive(s_pending_lock);
-    } else {
-        voice_ui_show_error(result.error[0] ? result.error : "Error al procesar el audio", true);
+    int err = voice_client_run(wav, wav_bytes, request_id, remote_status_changed,
+                               NULL, &result);
+    if (err != ESP_OK) {
+        if (request_is_current(request_id)) {
+            voice_ui_show_error(result.error[0] ? result.error : "Error al procesar el audio", true);
+            finish_upload_task(request_id);
+        }
+        vTaskDelete(NULL);
+        return;
     }
-    s_uploading = false;
+
+    if (!request_is_current(request_id) || request_was_cancelled(request_id)) {
+        finish_upload_task(request_id);
+        vTaskDelete(NULL);
+        return;
+    }
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    s_last_result = result;
+    xSemaphoreGive(s_pending_lock);
+    release_uploaded_wav(request_id);
+    voice_ui_show_response(result.transcript, result.answer, result.truncated);
+
+    char audio_error[256];
+    err = voice_client_play_speech(request_id, remote_status_changed, NULL,
+                                   audio_error, sizeof(audio_error));
+    if (request_was_cancelled(request_id)) {
+        finish_upload_task(request_id);
+        vTaskDelete(NULL);
+        return;
+    }
+    if (err != ESP_OK) {
+        xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+        strlcpy(s_last_result.audio_error, audio_error, sizeof(s_last_result.audio_error));
+        xSemaphoreGive(s_pending_lock);
+        voice_ui_show_audio_error(audio_error);
+    } else {
+        voice_ui_show_response(result.transcript, result.answer, result.truncated);
+    }
+    finish_upload_task(request_id);
+    vTaskDelete(NULL);
+}
+
+static void audio_retry_task(void *argument)
+{
+    (void)argument;
+    char request_id[sizeof(s_pending_request_id)];
+    voice_client_result_t result;
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    strlcpy(request_id, s_pending_request_id, sizeof(request_id));
+    result = s_last_result;
+    xSemaphoreGive(s_pending_lock);
+
+    char audio_error[256];
+    int err = voice_client_play_speech(request_id, remote_status_changed, NULL,
+                                       audio_error, sizeof(audio_error));
+    if (!request_is_current(request_id) || request_was_cancelled(request_id)) {
+        finish_upload_task(request_id);
+        vTaskDelete(NULL);
+        return;
+    }
+    if (err != ESP_OK) {
+        voice_ui_show_audio_error(audio_error);
+    } else {
+        voice_ui_show_response(result.transcript, result.answer, result.truncated);
+    }
+    finish_upload_task(request_id);
     vTaskDelete(NULL);
 }
 
@@ -90,10 +205,26 @@ static void start_upload(void)
         return;
     }
     s_uploading = true;
-    if (xTaskCreatePinnedToCore(upload_task, "voice_upload", 10240, NULL, 5, NULL, 0) !=
+    if (xTaskCreatePinnedToCore(upload_task, "voice_upload", 12288, NULL, 5, NULL, 0) !=
         pdPASS) {
         s_uploading = false;
         voice_ui_show_error("No hay memoria para iniciar el envío", true);
+    }
+}
+
+static void start_audio_retry(void)
+{
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    bool has_request = s_pending_request_id[0] != '\0' && s_pending_wav == NULL;
+    xSemaphoreGive(s_pending_lock);
+    if (!has_request || s_uploading) {
+        return;
+    }
+    s_uploading = true;
+    if (xTaskCreatePinnedToCore(audio_retry_task, "audio_retry", 12288, NULL, 5, NULL, 0) !=
+        pdPASS) {
+        s_uploading = false;
+        voice_ui_show_audio_error("No hay memoria para reintentar el audio");
     }
 }
 
@@ -132,15 +263,20 @@ static void recording_complete(
 static void record_pressed(void *context)
 {
     (void)context;
-    if (s_uploading || audio_recorder_is_recording()) {
+    bool was_playing = audio_player_is_playing();
+    if (was_playing) {
+        xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+        strlcpy(s_cancelled_request_id, s_pending_request_id,
+                sizeof(s_cancelled_request_id));
+        xSemaphoreGive(s_pending_lock);
+        audio_player_stop();
+        /* The playback task will only finish cleanup; the new recording owns the UI. */
+        s_uploading = false;
+    }
+    if (s_uploading && !was_playing) {
         return;
     }
-    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
-    free(s_pending_wav);
-    s_pending_wav = NULL;
-    s_pending_wav_bytes = 0;
-    s_pending_request_id[0] = '\0';
-    xSemaphoreGive(s_pending_lock);
+    clear_pending(true);
 
     audio_recorder_callbacks_t callbacks = {
         .on_progress = recording_progress,
@@ -164,7 +300,14 @@ static void record_released(void *context)
 static void retry_pressed(void *context)
 {
     (void)context;
-    start_upload();
+    xSemaphoreTake(s_pending_lock, portMAX_DELAY);
+    bool has_wav = s_pending_wav != NULL;
+    xSemaphoreGive(s_pending_lock);
+    if (has_wav) {
+        start_upload();
+    } else {
+        start_audio_retry();
+    }
 }
 
 void app_main(void)
@@ -178,6 +321,7 @@ void app_main(void)
     s_pending_lock = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_pending_lock == NULL ? ESP_ERR_NO_MEM : ESP_OK);
 
+    ESP_ERROR_CHECK(audio_player_init());
     voice_ui_callbacks_t ui_callbacks = {
         .on_record_pressed = record_pressed,
         .on_record_released = record_released,

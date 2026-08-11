@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "esp32-voice-bridge"
-version = "0.1.0"
-description = "Local voice bridge from an ESP32 recorder to STT and Hermes Agent"
+version = "0.2.0"
+description = "Local ESP32 voice bridge for STT, Hermes Agent, and Kokoro speech"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115,<1",

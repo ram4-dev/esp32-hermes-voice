@@ -18,3 +18,5 @@ firmware/main/certs/server_root_ca.pem
 # Voice bridge runtime data
 server/data/
 server/.coverage
+# Local Pi runtime state
+.atl/

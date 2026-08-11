@@ -10,18 +10,20 @@ ESP32 touch + microphones
         ▼
 Voice bridge on Proxmox
         ├── OpenAI-compatible speech-to-text API
-        └── Hermes Agent API with a persistent device session
+        ├── Hermes Agent API with a persistent device session
+        └── NaN Builders Kokoro TTS API (optional audio response)
 ```
 
-The ESP32 never receives the STT or Hermes credentials. Audio is deleted from
-the bridge after processing, while job metadata, transcripts, answers, and the
-Hermes session ID remain in SQLite.
+The ESP32 never receives the STT, Hermes, or Kokoro credentials. Input audio is
+deleted from the bridge after processing. Normalized speech is kept for 15 minutes
+and then removed, while job metadata, transcripts, answers, and the Hermes session
+ID remain in SQLite.
 
 ## Repository layout
 
 - `firmware/`: ESP-IDF 5.5 firmware using Waveshare's official board support
-  package, LVGL, ES7210 microphone input, PSRAM recording, WAV encoding, and the
-  bridge client.
+  package, LVGL, ES7210 microphone input, PSRAM recording, ES8311 playback,
+  streaming WAV decoding, WAV encoding, and the bridge client.
 - `server/`: FastAPI bridge, SQLite state, STT/Hermes clients, Docker Compose,
   Caddy TLS, and tests.
 
@@ -56,8 +58,8 @@ Put the generated value in both:
 - `.env` as the token in `VOICE_DEVICE_TOKENS`.
 - Firmware menuconfig as `Device bearer token`.
 
-Set the real STT URL, STT model, STT key, Hermes URL, and Hermes key in `.env`,
-then start the services:
+Set the real STT URL, STT model, STT key, Hermes URL, Hermes key, and NaN
+Builders TTS settings in `.env`, then start the services:
 
 ```bash
 docker compose up -d --build
@@ -99,6 +101,7 @@ Under **ESP32 Voice Agent**, configure:
 - The device ID from `VOICE_DEVICE_TOKENS`.
 - The matching device token.
 - **Embed a private/local root CA**.
+- Speaker volume (ES8311): `65` by default.
 
 `sdkconfig` and the real CA certificate are intentionally ignored by Git.
 
@@ -116,10 +119,16 @@ power-cycle it while holding `BOOT`.
 
 1. Hold the circular control to record.
 2. Release it to create and upload a 16 kHz, mono, 16-bit PCM WAV.
-3. The screen advances through upload, transcription, and Hermes states.
-4. The transcript and Hermes answer appear in a scrollable view.
-5. If Wi-Fi or an upstream service fails, the WAV remains in PSRAM and the
-   **REINTENTAR** action reuses the same idempotency key.
+3. The screen advances through upload, transcription, Hermes, and
+   **Sintetizando** states.
+4. The transcript and Hermes answer appear in a scrollable view while the
+   normalized WAV is downloaded in streaming chunks to the ES8311 speaker.
+5. **Reproduciendo** keeps the text visible. Pressing the record control stops
+   playback (barge-in) and starts a new recording.
+6. If Kokoro or audio download fails, the text answer remains available and
+   **REINTENTAR** retries only the authenticated speech download. If upload
+   fails, the original WAV remains in PSRAM and the same idempotency key is
+   retried.
 
 Recordings stop automatically after 30 seconds. Only one pending recording is
 kept; starting a new recording replaces a failed pending one. A reboot clears a
@@ -143,26 +152,48 @@ returns its current state with `200`.
 
 ### `GET /v1/voice/jobs/{request_id}`
 
-Returns one of `queued`, `transcribing`, `asking_hermes`, `completed`, or
-`failed`. Completed jobs include `transcript`, `answer`, `session_id`, and a
-`truncated` flag.
+Returns one of `queued`, `transcribing`, `asking_hermes`, `synthesizing`,
+`completed`, or `failed`. Completed jobs include `transcript`, `answer`,
+`session_id`, `truncated`, and `tts_status` (`ready`, `failed`, or `expired`).
+A ready job includes `speech_url`.
+
+### `GET /v1/voice/jobs/{request_id}/speech`
+
+The same device bearer token authenticates this endpoint. It streams the
+normalized mono 16 kHz, 16-bit PCM WAV. Audio expires after 15 minutes and
+returns `410`; a job without usable speech returns `409` while its text answer
+remains valid.
 
 ### Health
 
 - `GET /health`: process and SQLite readiness.
-- `GET /health/deep`: also probes STT and Hermes.
+- `GET /health/deep`: also probes STT, Hermes, and Kokoro.
+
+TTS is deliberately a best-effort stage: a Kokoro failure never discards the
+Hermes text answer.
 
 ## Development and tests
 
 ```bash
 cd server
 uv sync --extra test
+uv run ruff check voice_bridge tests
 uv run pytest -q
+docker build -t esp32-voice-bridge:local .
 ```
 
-The tests cover WAV validation, authentication, the complete STT-to-Hermes
-pipeline, audio deletion, idempotent retries, persistent sessions, and health
-checks.
+Firmware CI uses the reproducible ESP-IDF 5.5.4 container:
+
+```bash
+docker run --rm -e HOME=/tmp/idf-home \
+  -v "$PWD/../firmware:/project" -w /project \
+  espressif/idf:v5.5.4 bash -lc 'idf.py reconfigure && idf.py build'
+```
+
+The tests cover WAV validation and normalization, Kokoro's request contract,
+authentication, the complete STT-to-Hermes-to-TTS pipeline, text fallback,
+speech retention and expiration, SQLite migration, audio deletion, idempotent
+retries, persistent sessions, and health checks.
 
 ## Security notes
 

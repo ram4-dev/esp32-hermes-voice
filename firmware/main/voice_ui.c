@@ -207,6 +207,17 @@ void voice_ui_show_working(const char *title, const char *detail)
     bsp_display_unlock();
 }
 
+void voice_ui_show_playing(const char *detail)
+{
+    if (!bsp_display_lock(0)) return;
+    show_answer_panel(true);
+    lv_label_set_text(s_status, "Reproduciendo");
+    lv_label_set_text(s_detail, detail != NULL ? detail : "Audio de Hermes");
+    /* Keep the new-record control enabled so pressing it is a barge-in. */
+    set_interactive(true, false);
+    bsp_display_unlock();
+}
+
 void voice_ui_show_response(const char *transcript, const char *answer, bool truncated)
 {
     char transcript_text[2200];
@@ -219,6 +230,16 @@ void voice_ui_show_response(const char *transcript, const char *answer, bool tru
     lv_label_set_text(s_new_record_label, "MANTENER PARA HABLAR");
     show_answer_panel(true);
     set_interactive(true, false);
+    bsp_display_unlock();
+}
+
+void voice_ui_show_audio_error(const char *message)
+{
+    if (!bsp_display_lock(0)) return;
+    show_answer_panel(true);
+    lv_label_set_text(s_status, "Texto listo");
+    lv_label_set_text(s_detail, message != NULL ? message : "Audio no disponible");
+    set_interactive(true, true);
     bsp_display_unlock();
 }
 
