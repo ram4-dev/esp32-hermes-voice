@@ -38,6 +38,27 @@ typedef struct operation_token {
 static operation_token_t *s_record_operation;
 static operation_token_t *s_upload_operation;
 
+typedef enum {
+    UI_ACTION_RECORD_PRESSED = 0,
+    UI_ACTION_RECORD_RELEASED,
+    UI_ACTION_CANCEL,
+    UI_ACTION_RETRY,
+    UI_ACTION_VOLUME_DOWN,
+    UI_ACTION_VOLUME_UP,
+    UI_ACTION_AUDIO_TOGGLE,
+} ui_action_t;
+
+#define UI_ACTION_QUEUE_DEPTH 16
+static QueueHandle_t s_ui_actions;
+
+static void do_record_pressed(void *context);
+static void do_record_released(void *context);
+static void do_cancel_pressed(void *context);
+static void do_retry_pressed(void *context);
+static void do_volume_down_pressed(void *context);
+static void do_volume_up_pressed(void *context);
+static void do_audio_toggle_pressed(void *context);
+
 static void make_request_id(char *target, size_t capacity)
 {
     uint32_t random_values[4] = {esp_random(), esp_random(), esp_random(), esp_random()};
@@ -318,7 +339,7 @@ static void recording_complete(uint8_t *pcm, size_t pcm_bytes, esp_err_t result,
     start_upload();
 }
 
-static void record_pressed(void *context)
+static void do_record_pressed(void *context)
 {
     (void)context;
     if (audio_player_is_playing()) {
@@ -363,13 +384,13 @@ static void record_pressed(void *context)
     }
 }
 
-static void record_released(void *context)
+static void do_record_released(void *context)
 {
     (void)context;
     audio_recorder_stop();
 }
 
-static void cancel_pressed(void *context)
+static void do_cancel_pressed(void *context)
 {
     (void)context;
     operation_token_t *token = NULL;
@@ -395,7 +416,7 @@ static void cancel_pressed(void *context)
     voice_ui_show_idle(wifi_manager_is_connected());
 }
 
-static void retry_pressed(void *context)
+static void do_retry_pressed(void *context)
 {
     (void)context;
     xSemaphoreTake(s_state_lock, portMAX_DELAY);
@@ -408,14 +429,26 @@ static void retry_pressed(void *context)
     }
 }
 
-static void volume_pressed(void *context)
+static void change_volume(int delta)
+{
+    int next = (int)audio_player_get_volume() + delta;
+    if (next < 0) next = 0;
+    if (next > 100) next = 100;
+    if (audio_player_set_volume((uint8_t)next) == ESP_OK) {
+        voice_ui_show_volume(audio_player_get_volume());
+    }
+}
+
+static void do_volume_down_pressed(void *context)
 {
     (void)context;
-    uint8_t volume = audio_player_get_volume();
-    volume = volume >= 100 ? 0 : (uint8_t)(volume + 10);
-    if (audio_player_set_volume(volume) == ESP_OK) {
-        voice_ui_show_volume(volume);
-    }
+    change_volume(-10);
+}
+
+static void do_volume_up_pressed(void *context)
+{
+    (void)context;
+    change_volume(10);
 }
 
 static void wifi_manager_event(wifi_manager_event_t event, uint8_t network_index,
@@ -428,7 +461,7 @@ static void wifi_manager_event(wifi_manager_event_t event, uint8_t network_index
         network_index, NULL);
 }
 
-static void audio_toggle_pressed(void *context)
+static void do_audio_toggle_pressed(void *context)
 {
     (void)context;
     bool enabled = !s_audio_enabled;
@@ -449,6 +482,91 @@ static void audio_toggle_pressed(void *context)
     voice_ui_set_audio_enabled(s_audio_enabled);
 }
 
+static bool queue_ui_action(ui_action_t action)
+{
+    if (s_ui_actions == NULL || xQueueSend(s_ui_actions, &action, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "dropping UI action %d while worker is busy", (int)action);
+        return false;
+    }
+    return true;
+}
+
+static void record_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_RECORD_PRESSED);
+}
+
+static void record_released(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_RECORD_RELEASED);
+}
+
+static void cancel_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_CANCEL);
+}
+
+static void retry_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_RETRY);
+}
+
+static void volume_down_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_VOLUME_DOWN);
+}
+
+static void volume_up_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_VOLUME_UP);
+}
+
+static void audio_toggle_pressed(void *context)
+{
+    (void)context;
+    queue_ui_action(UI_ACTION_AUDIO_TOGGLE);
+}
+
+static void ui_action_task(void *argument)
+{
+    (void)argument;
+    ui_action_t action;
+    while (xQueueReceive(s_ui_actions, &action, portMAX_DELAY) == pdTRUE) {
+        switch (action) {
+        case UI_ACTION_RECORD_PRESSED:
+            do_record_pressed(NULL);
+            break;
+        case UI_ACTION_RECORD_RELEASED:
+            do_record_released(NULL);
+            break;
+        case UI_ACTION_CANCEL:
+            do_cancel_pressed(NULL);
+            break;
+        case UI_ACTION_RETRY:
+            do_retry_pressed(NULL);
+            break;
+        case UI_ACTION_VOLUME_DOWN:
+            do_volume_down_pressed(NULL);
+            break;
+        case UI_ACTION_VOLUME_UP:
+            do_volume_up_pressed(NULL);
+            break;
+        case UI_ACTION_AUDIO_TOGGLE:
+            do_audio_toggle_pressed(NULL);
+            break;
+        default:
+            break;
+        }
+    }
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     esp_err_t result = nvs_flash_init();
@@ -459,6 +577,10 @@ void app_main(void)
     ESP_ERROR_CHECK(result);
     s_state_lock = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(s_state_lock == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+    s_ui_actions = xQueueCreate(UI_ACTION_QUEUE_DEPTH, sizeof(ui_action_t));
+    ESP_ERROR_CHECK(s_ui_actions == NULL ? ESP_ERR_NO_MEM : ESP_OK);
+    ESP_ERROR_CHECK(xTaskCreate(ui_action_task, "ui_actions", 6144, NULL, 4, NULL) == pdPASS
+                        ? ESP_OK : ESP_ERR_NO_MEM);
 
     ESP_ERROR_CHECK(audio_player_init());
     s_audio_enabled = audio_player_get_audio_enabled();
@@ -467,7 +589,8 @@ void app_main(void)
         .on_record_released = record_released,
         .on_retry_pressed = retry_pressed,
         .on_cancel_pressed = cancel_pressed,
-        .on_volume_pressed = volume_pressed,
+        .on_volume_down_pressed = volume_down_pressed,
+        .on_volume_up_pressed = volume_up_pressed,
         .on_audio_toggle_pressed = audio_toggle_pressed,
         .context = NULL,
     };

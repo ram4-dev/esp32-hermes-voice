@@ -9,7 +9,8 @@ typedef struct {
     void (*on_record_released)(void *context);
     void (*on_retry_pressed)(void *context);
     void (*on_cancel_pressed)(void *context);
-    void (*on_volume_pressed)(void *context);
+    void (*on_volume_down_pressed)(void *context);
+    void (*on_volume_up_pressed)(void *context);
     void (*on_audio_toggle_pressed)(void *context);
     void *context;
 } voice_ui_callbacks_t;

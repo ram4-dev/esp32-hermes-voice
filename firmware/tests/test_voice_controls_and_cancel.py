@@ -21,7 +21,8 @@ def test_volume_button_uses_nvs_and_audio_toggle_preserves_text() -> None:
     assert 'NVS_AUDIO_ENABLED_KEY = "audio_enabled"' in PLAYER
     assert "audio_player_set_audio_enabled" in PLAYER
     assert "audio_player_get_audio_enabled" in PLAYER
-    assert "on_volume_pressed" in UI_HEADER
+    assert "on_volume_down_pressed" in UI_HEADER
+    assert "on_volume_up_pressed" in UI_HEADER
     assert "on_audio_toggle_pressed" in UI_HEADER
     assert "voice_ui_show_response" in APP
     assert "if (s_audio_enabled && !token_cancelled(token))" in APP
@@ -76,3 +77,23 @@ def test_spanish_glyph_font_and_layout_contract() -> None:
     assert '"voice_font_20.c"' in (MAIN / "CMakeLists.txt").read_text()
     assert "PANEL_H" in UI
     assert "ACTION_Y" in UI
+    assert "SAFE_X 24" in UI
+    assert "TOP_BUTTON_Y 24" in UI
+    assert "VOLUME_BUTTON_W 76" in UI
+    assert "AUDIO_BUTTON_X" in UI
+    assert "lv_label_set_text(volume_down_label, \"VOL -\")" in UI
+    assert "lv_label_set_text(volume_up_label, \"VOL +\")" in UI
+
+
+def test_ui_actions_are_deferred_and_record_gesture_is_debounced() -> None:
+    assert "UI_ACTION_QUEUE_DEPTH" in APP
+    assert "xQueueSend(s_ui_actions, &action, 0)" in APP
+    assert "ui_action_task" in APP
+    assert "audio_player_set_audio_enabled" in APP
+    assert "change_volume(-10)" in APP
+    assert "change_volume(10)" in APP
+    assert "LV_EVENT_PRESS_LOST" in UI
+    assert "LV_EVENT_PRESSING" in UI
+    assert "RECORD_RELEASE_GRACE_MS 180" in UI
+    assert "lv_timer_set_repeat_count" in UI
+    assert "Preparando micrófono…" in UI
