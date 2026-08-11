@@ -23,9 +23,11 @@ static void wifi_event_handler(
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        const wifi_event_sta_disconnected_t *disconnected = event_data;
         xEventGroupClearBits(s_events, WIFI_CONNECTED_BIT);
         esp_wifi_connect();
-        ESP_LOGW(TAG, "Wi-Fi disconnected; reconnecting");
+        ESP_LOGW(TAG, "Wi-Fi disconnected (reason=%d); reconnecting",
+                 disconnected != NULL ? disconnected->reason : -1);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         xEventGroupSetBits(s_events, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "Wi-Fi connected");
