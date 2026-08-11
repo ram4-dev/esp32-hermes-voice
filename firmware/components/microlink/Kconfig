@@ -1,0 +1,64 @@
+menu "MicroLink V2 Configuration"
+
+    config ML_ZERO_COPY_WG
+        bool "Enable zero-copy WireGuard receive"
+        default n
+        help
+            Keep the default BSD socket path for this voice device. The
+            zero-copy path is available for high-throughput applications.
+
+    config ML_MAX_PEERS
+        int "Maximum simultaneous WireGuard peers"
+        default 8
+        range 1 64
+        help
+            Active peers are capped at eight for this device.
+
+    config ML_NVS_MAX_PEERS
+        int "Maximum cached peers in NVS"
+        default 16
+        range 16 1024
+
+    config ML_PRIORITY_PEER_IP
+        string "Priority peer VPN IP"
+        default ""
+
+    config ML_H2_BUFFER_SIZE_KB
+        int "HTTP/2 receive buffer size (KB)"
+        default 64
+        range 64 2048
+        help
+            64KB is the bounded MapResponse buffer for this device.
+
+    config ML_JSON_BUFFER_SIZE_KB
+        int "JSON parse buffer size (KB)"
+        default 64
+        range 64 2048
+        help
+            64KB is the bounded cJSON MapResponse buffer for this device.
+
+    config ML_DERP_REGION
+        int "Preferred DERP region"
+        default 11
+        range 1 32
+        help
+            Tailscale DERP region 11 (São Paulo). This is sent as
+            PreferredDERP and used as the fallback when the control plane
+            does not provide a home region.
+
+    menu "Credentials"
+        comment "Configure secrets only in local sdkconfig or menuconfig."
+
+        config ML_TAILSCALE_AUTH_KEY
+            string "Tailscale auth key"
+            default ""
+            help
+                Local-only auth key. Never commit, log, or print its value.
+
+        config ML_DEVICE_NAME
+            string "Device hostname"
+            default "esp32-hermes"
+
+    endmenu
+
+endmenu

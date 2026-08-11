@@ -23,7 +23,8 @@ ID remain in SQLite.
 
 - `firmware/`: ESP-IDF 5.5 firmware using Waveshare's official board support
   package, LVGL, ES7210 microphone input, PSRAM recording, ES8311 playback,
-  streaming WAV decoding, WAV encoding, and the bridge client.
+  streaming WAV decoding, WAV encoding, the bridge client, and the Wi-Fi-only
+  MicroLink/Tailscale integration (`firmware/docs/microlink-integration.md`).
 - `server/`: FastAPI bridge, SQLite state, STT/Hermes clients, Docker Compose,
   Caddy TLS, and tests.
 
@@ -102,6 +103,8 @@ Under **ESP32 Voice Agent**, configure:
 
     - `VOICE_WIFI_PRIMARY_SSID` / `VOICE_WIFI_PRIMARY_PASSWORD`.
     - `VOICE_WIFI_SECONDARY_SSID` / `VOICE_WIFI_SECONDARY_PASSWORD` for fallback.
+    - Under **MicroLink V2**, set the local Tailscale auth key; it is empty in
+      tracked defaults and is never logged.
     - Keep `https://hermes-server.tailfb789f.ts.net:8443` as the bridge base URL.
       A LAN URL is allowed only in ignored local `sdkconfig.defaults.local` for
       development.

@@ -8,6 +8,7 @@ idf_component_register(
         "voice_font_20.c"
         "wav.c"
         "wifi_manager.c"
+        "tailscale_link.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_codec_dev
@@ -18,6 +19,7 @@ idf_component_register(
         esp_timer
         esp_wifi
         json
+        microlink
         nvs_flash
 )
 

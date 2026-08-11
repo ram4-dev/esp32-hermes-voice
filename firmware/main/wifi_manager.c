@@ -20,6 +20,8 @@ static const char *TAG = "wifi_manager";
 static EventGroupHandle_t s_events;
 static uint8_t s_network_index;
 static uint8_t s_failures;
+static wifi_manager_event_cb_t s_event_callback;
+static void *s_event_context;
 
 static bool network_configured(uint8_t index)
 {
@@ -74,6 +76,9 @@ static void wifi_event_handler(
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *disconnected = event_data;
         xEventGroupClearBits(s_events, WIFI_CONNECTED_BIT);
+        if (s_event_callback != NULL) {
+            s_event_callback(WIFI_MANAGER_LOST_IP, s_network_index, s_event_context);
+        }
         ++s_failures;
         if (s_failures >= WIFI_RETRY_LIMIT) {
             try_next_network();
@@ -85,8 +90,17 @@ static void wifi_event_handler(
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         s_failures = 0;
         xEventGroupSetBits(s_events, WIFI_CONNECTED_BIT);
+        if (s_event_callback != NULL) {
+            s_event_callback(WIFI_MANAGER_GOT_IP, s_network_index, s_event_context);
+        }
         ESP_LOGI(TAG, "Wi-Fi connected on network %u", (unsigned)(s_network_index + 1));
     }
+}
+
+void wifi_manager_set_event_callback(wifi_manager_event_cb_t callback, void *context)
+{
+    s_event_callback = callback;
+    s_event_context = context;
 }
 
 esp_err_t wifi_manager_start(void)

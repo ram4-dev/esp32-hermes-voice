@@ -31,9 +31,9 @@ config VOICE_DEVICE_ID
 
 config VOICE_DEVICE_TOKEN
     string "Device bearer token"
-    default "replace-me"
+    default ""
     help
-        Configure locally; never commit a real token.
+        Configure locally; never commit or log a real token.
 
 config VOICE_BRIDGE_EMBED_LOCAL_CA
     bool "Embed a private/local root CA"

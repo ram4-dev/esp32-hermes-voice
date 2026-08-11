@@ -25,5 +25,6 @@ void voice_ui_show_audio_error(const char *message);
 void voice_ui_show_error(const char *message, bool can_retry);
 void voice_ui_show_volume(uint8_t volume);
 void voice_ui_set_audio_enabled(bool enabled);
+void voice_ui_set_tailscale_state(const char *state, bool connected);
 
 #endif /* VOICE_UI_H */

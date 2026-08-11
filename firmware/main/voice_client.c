@@ -13,6 +13,12 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+#include <netdb.h>
+#include <net/if.h>
+
+#include "tailscale_link.h"
 
 #define RESPONSE_CAPACITY 8192
 #define URL_CAPACITY 512
@@ -215,6 +221,41 @@ static void configure_tls(esp_http_client_config_t *config)
 #endif
 }
 
+/*
+ * ESP-IDF's HTTP client accepts if_name and applies SO_BINDTODEVICE. It is
+ * only needed when DNS returns a 100.64/10 tailnet address and another
+ * interface could win route selection. Public Funnel addresses intentionally
+ * remain on the normal Wi-Fi route.
+ */
+static void configure_vpn_interface(const char *url, esp_http_client_config_t *config,
+                                    struct ifreq *vpn_ifreq)
+{
+    if (url == NULL || config == NULL || vpn_ifreq == NULL || !tailscale_link_is_connected()) {
+        return;
+    }
+    const char *authority = strstr(url, "://");
+    if (authority == NULL) return;
+    authority += 3;
+    char host[128];
+    size_t host_len = strcspn(authority, ":/");
+    if (host_len == 0 || host_len >= sizeof(host)) return;
+    memcpy(host, authority, host_len);
+    host[host_len] = '\0';
+
+    struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM };
+    struct addrinfo *addresses = NULL;
+    if (getaddrinfo(host, NULL, &hints, &addresses) != 0 || addresses == NULL) return;
+    uint32_t host_ip = ntohl(((struct sockaddr_in *)addresses->ai_addr)->sin_addr.s_addr);
+    char interface_name[IFNAMSIZ];
+    if (tailscale_link_bind_vpn_route(host_ip, interface_name, sizeof(interface_name))) {
+        memset(vpn_ifreq, 0, sizeof(*vpn_ifreq));
+        strlcpy(vpn_ifreq->ifr_name, interface_name, sizeof(vpn_ifreq->ifr_name));
+        config->if_name = vpn_ifreq;
+        ESP_LOGI(TAG, "voice HTTP route bound to Tailscale interface");
+    }
+    freeaddrinfo(addresses);
+}
+
 static void set_auth_headers(esp_http_client_handle_t client, const char *request_id)
 {
     char authorization[320];
@@ -259,6 +300,8 @@ static esp_err_t perform_post(
         .buffer_size_tx = 4096,
     };
     configure_tls(&config);
+    struct ifreq vpn_ifreq;
+    configure_vpn_interface(url, &config, &vpn_ifreq);
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         free(response);
@@ -306,6 +349,8 @@ static esp_err_t perform_get(
         .buffer_size = 2048,
     };
     configure_tls(&config);
+    struct ifreq vpn_ifreq;
+    configure_vpn_interface(url, &config, &vpn_ifreq);
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         return ESP_ERR_NO_MEM;
@@ -462,6 +507,8 @@ int voice_client_play_speech(
         .buffer_size = 4096,
     };
     configure_tls(&config);
+    struct ifreq vpn_ifreq;
+    configure_vpn_interface(url, &config, &vpn_ifreq);
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (client == NULL) {
         strlcpy(error, "No hay memoria para descargar el audio", error_capacity);

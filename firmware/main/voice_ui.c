@@ -1,6 +1,7 @@
 #include "voice_ui.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include "bsp/esp-bsp.h"
 #include "esp_log.h"
@@ -23,10 +24,12 @@ static lv_obj_t *s_volume_button;
 static lv_obj_t *s_volume_label;
 static lv_obj_t *s_audio_button;
 static lv_obj_t *s_audio_label;
+static lv_obj_t *s_tailscale_label;
 static lv_obj_t *s_answer_panel;
 static lv_obj_t *s_answer;
 static lv_obj_t *s_transcript;
 static bool s_recording_from_new_button;
+static bool s_ui_idle;
 static bool s_audio_enabled = true;
 static uint8_t s_volume;
 
@@ -142,6 +145,13 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     s_audio_label = lv_label_create(s_audio_button);
     lv_obj_center(s_audio_label);
 
+    s_tailscale_label = lv_label_create(screen);
+    lv_obj_set_width(s_tailscale_label, 128);
+    lv_obj_align(s_tailscale_label, LV_ALIGN_TOP_MID, 0, 17);
+    lv_obj_set_style_text_align(s_tailscale_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(s_tailscale_label, lv_color_hex(0x98A2B3), 0);
+    lv_label_set_text(s_tailscale_label, "TS: idle");
+
     s_status = lv_label_create(screen);
     lv_obj_set_width(s_status, SAFE_W);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, TOP_Y);
@@ -222,6 +232,7 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
 void voice_ui_show_idle(bool connected)
 {
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = true;
     show_answer_panel(false);
     lv_label_set_text(s_status, "Listo");
     lv_label_set_text(s_detail, connected ? "Conectado a Proxmox" : "Conectando al Wi-Fi…");
@@ -237,6 +248,7 @@ void voice_ui_show_recording(uint32_t duration_ms, uint8_t level)
              (unsigned long)(duration_ms / 1000),
              (unsigned long)((duration_ms % 1000) / 100), level);
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     if (s_recording_from_new_button) {
         lv_obj_add_flag(s_answer_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_record_button, LV_OBJ_FLAG_HIDDEN);
@@ -255,6 +267,7 @@ void voice_ui_show_recording(uint32_t duration_ms, uint8_t level)
 void voice_ui_show_working(const char *title, const char *detail)
 {
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     show_answer_panel(false);
     lv_label_set_text(s_status, title);
     lv_label_set_text(s_detail, detail);
@@ -266,6 +279,7 @@ void voice_ui_show_working(const char *title, const char *detail)
 void voice_ui_show_playing(const char *detail)
 {
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     show_answer_panel(true);
     lv_obj_add_flag(s_new_record_button, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_status, "Reproduciendo");
@@ -280,6 +294,7 @@ void voice_ui_show_response(const char *transcript, const char *answer, bool tru
     char transcript_text[2200];
     snprintf(transcript_text, sizeof(transcript_text), "Vos: %s", transcript);
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     lv_label_set_text(s_status, "Hermes");
     lv_label_set_text(s_detail, audio_enabled ?
                       (truncated ? "Respuesta abreviada; texto y audio listos" : "Texto y audio listos") :
@@ -295,6 +310,7 @@ void voice_ui_show_response(const char *transcript, const char *answer, bool tru
 void voice_ui_show_audio_error(const char *message)
 {
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     show_answer_panel(true);
     lv_label_set_text(s_status, "Texto listo");
     lv_label_set_text(s_detail, message != NULL ? message : "Audio no disponible");
@@ -305,6 +321,7 @@ void voice_ui_show_audio_error(const char *message)
 void voice_ui_show_error(const char *message, bool can_retry)
 {
     if (!bsp_display_lock(0)) return;
+    s_ui_idle = false;
     show_answer_panel(false);
     lv_label_set_text(s_status, "No salió");
     lv_label_set_text(s_detail, message != NULL ? message : "Error inesperado");
@@ -328,5 +345,24 @@ void voice_ui_set_audio_enabled(bool enabled)
     s_audio_enabled = enabled;
     if (!bsp_display_lock(0)) return;
     lv_label_set_text(s_audio_label, enabled ? "AUDIO ON" : "AUDIO OFF");
+    bsp_display_unlock();
+}
+
+void voice_ui_set_tailscale_state(const char *state, bool connected)
+{
+    if (!bsp_display_lock(0)) return;
+    lv_label_set_text_fmt(s_tailscale_label, "TS: %s", state != NULL ? state : "unknown");
+    lv_obj_set_style_text_color(s_tailscale_label,
+                                lv_color_hex(connected ? 0x22C55E : 0x98A2B3), 0);
+    bool connecting = state != NULL &&
+                      (strcmp(state, "wifi_wait") == 0 ||
+                       strcmp(state, "connecting") == 0 ||
+                       strcmp(state, "registering") == 0 ||
+                       strcmp(state, "reconnecting") == 0);
+    if (s_ui_idle && connected) {
+        lv_label_set_text(s_detail, "Conectado a Proxmox");
+    } else if (s_ui_idle && connecting) {
+        lv_label_set_text(s_detail, "Conectando al Wi-Fi…");
+    }
     bsp_display_unlock();
 }

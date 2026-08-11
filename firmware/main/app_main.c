@@ -15,6 +15,7 @@
 #include "voice_client.h"
 #include "voice_ui.h"
 #include "wav.h"
+#include "tailscale_link.h"
 #include "wifi_manager.h"
 
 static const char *TAG = "voice_app";
@@ -417,6 +418,16 @@ static void volume_pressed(void *context)
     }
 }
 
+static void wifi_manager_event(wifi_manager_event_t event, uint8_t network_index,
+                               void *context)
+{
+    (void)context;
+    tailscale_link_on_wifi_event(
+        event == WIFI_MANAGER_GOT_IP ? TAILSCALE_LINK_WIFI_GOT_IP
+                                     : TAILSCALE_LINK_WIFI_LOST_IP,
+        network_index, NULL);
+}
+
 static void audio_toggle_pressed(void *context)
 {
     (void)context;
@@ -463,8 +474,13 @@ void app_main(void)
     ESP_ERROR_CHECK(voice_ui_init(&ui_callbacks));
     ESP_ERROR_CHECK(audio_recorder_init());
 
-    if (strcmp(CONFIG_VOICE_DEVICE_TOKEN, "replace-me") == 0) {
-        ESP_LOGW(TAG, "configure a real device token in ignored local sdkconfig");
+    if (CONFIG_VOICE_DEVICE_TOKEN[0] == '\0') {
+        ESP_LOGW(TAG, "voice device token is not configured in local sdkconfig");
+    }
+    wifi_manager_set_event_callback(wifi_manager_event, NULL);
+    result = tailscale_link_init();
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Tailscale integration startup failed: %s", esp_err_to_name(result));
     }
     result = wifi_manager_start();
     if (result != ESP_OK) {
@@ -474,5 +490,9 @@ void app_main(void)
     }
     voice_ui_set_audio_enabled(s_audio_enabled);
     voice_ui_show_volume(audio_player_get_volume());
-    voice_ui_show_idle(wifi_manager_wait_connected(15000));
+    bool wifi_ready = wifi_manager_wait_connected(15000);
+    voice_ui_show_idle(wifi_ready && tailscale_link_is_connected());
+    ESP_LOGI(TAG, "Tailscale state=%s vpn_ip=%08lx",
+             tailscale_link_state_name(tailscale_link_get_state()),
+             (unsigned long)tailscale_link_get_vpn_ip());
 }
