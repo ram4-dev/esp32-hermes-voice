@@ -27,6 +27,18 @@ static lv_obj_t *s_volume_label;
 static lv_obj_t *s_audio_button;
 static lv_obj_t *s_audio_label;
 static lv_obj_t *s_tailscale_label;
+
+typedef struct {
+    bool armed;
+    void (*action)(void);
+} discrete_button_state_t;
+
+static discrete_button_state_t s_retry_button_state;
+static discrete_button_state_t s_cancel_button_state;
+static discrete_button_state_t s_volume_down_button_state;
+static discrete_button_state_t s_volume_up_button_state;
+static discrete_button_state_t s_audio_button_state;
+
 static lv_obj_t *s_answer_panel;
 static lv_obj_t *s_answer;
 static lv_obj_t *s_transcript;
@@ -61,6 +73,7 @@ static uint8_t s_volume;
 #define RECORD_RELEASE_GRACE_MS 180
 
 static void set_interactive(bool enabled, bool show_retry, bool show_cancel);
+static void set_recording_visual(bool recording);
 static void show_answer_panel(bool visible);
 
 static void cancel_record_release_timer(void)
@@ -77,6 +90,7 @@ static void finish_record_release(void)
     if (!s_record_gesture_active || !s_record_release_requested) return;
     s_record_gesture_active = false;
     s_record_release_requested = false;
+    set_recording_visual(false);
     if (s_callbacks.on_record_released != NULL) {
         s_callbacks.on_record_released(s_callbacks.context);
     }
@@ -92,6 +106,7 @@ static void record_release_timer_cb(lv_timer_t *timer)
 static void show_record_gesture_feedback(void)
 {
     s_ui_idle = false;
+    set_recording_visual(true);
     if (s_recording_from_new_button) {
         lv_obj_add_flag(s_answer_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_record_button, LV_OBJ_FLAG_HIDDEN);
@@ -127,9 +142,11 @@ static void record_event(lv_event_t *event)
 {
     lv_event_code_t code = lv_event_get_code(event);
     if (code == LV_EVENT_PRESSED) {
+        /* A duplicate PRESSED can follow PRESS_LOST on a jittery panel. It
+         * must not cancel the pending release or leave the gesture latched. */
+        if (s_record_gesture_active) return;
         cancel_record_release_timer();
         s_record_release_requested = false;
-        if (s_record_gesture_active) return;
         s_record_gesture_active = true;
         s_record_pressed_at_us = esp_timer_get_time();
         s_recording_from_new_button = lv_event_get_target(event) == s_new_record_button;
@@ -139,7 +156,9 @@ static void record_event(lv_event_t *event)
             s_callbacks.on_record_pressed(s_callbacks.context);
         }
     } else if (code == LV_EVENT_PRESSING) {
-        /* Touch jitter can emit PRESS_LOST followed by PRESSING again. */
+        /* A finger that returned after transient PRESS_LOST is still holding
+         * the gesture. Duplicate PRESSED events are ignored above, so this
+         * recovery cannot create a second start or release latch. */
         if (s_record_gesture_active && s_record_release_requested) {
             s_record_release_requested = false;
             cancel_record_release_timer();
@@ -151,43 +170,52 @@ static void record_event(lv_event_t *event)
     }
 }
 
-static void retry_event(lv_event_t *event)
+static void retry_action(void)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED &&
-        s_callbacks.on_retry_pressed != NULL) {
+    if (s_callbacks.on_retry_pressed != NULL) {
         s_callbacks.on_retry_pressed(s_callbacks.context);
     }
 }
 
-static void cancel_event(lv_event_t *event)
+static void cancel_action(void)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED &&
-        s_callbacks.on_cancel_pressed != NULL) {
+    if (s_callbacks.on_cancel_pressed != NULL) {
         s_callbacks.on_cancel_pressed(s_callbacks.context);
     }
 }
 
-static void volume_down_event(lv_event_t *event)
+static void volume_down_action(void)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED &&
-        s_callbacks.on_volume_down_pressed != NULL) {
+    if (s_callbacks.on_volume_down_pressed != NULL) {
         s_callbacks.on_volume_down_pressed(s_callbacks.context);
     }
 }
 
-static void volume_up_event(lv_event_t *event)
+static void volume_up_action(void)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED &&
-        s_callbacks.on_volume_up_pressed != NULL) {
+    if (s_callbacks.on_volume_up_pressed != NULL) {
         s_callbacks.on_volume_up_pressed(s_callbacks.context);
     }
 }
 
-static void audio_event(lv_event_t *event)
+static void audio_action(void)
 {
-    if (lv_event_get_code(event) == LV_EVENT_CLICKED &&
-        s_callbacks.on_audio_toggle_pressed != NULL) {
+    if (s_callbacks.on_audio_toggle_pressed != NULL) {
         s_callbacks.on_audio_toggle_pressed(s_callbacks.context);
+    }
+}
+
+static void discrete_button_event(lv_event_t *event)
+{
+    discrete_button_state_t *state = lv_event_get_user_data(event);
+    if (state == NULL) return;
+    lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED) {
+        state->armed = true;
+    } else if ((code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) &&
+               state->armed) {
+        state->armed = false;
+        if (state->action != NULL) state->action();
     }
 }
 
@@ -206,6 +234,21 @@ static void set_interactive(bool enabled, bool show_retry, bool show_cancel)
     else lv_obj_add_flag(s_cancel_button, LV_OBJ_FLAG_HIDDEN);
 }
 
+static void set_recording_visual(bool recording)
+{
+    if (s_record_button == NULL || s_new_record_button == NULL) return;
+    lv_color_t color = lv_color_hex(recording ? 0xDC2626 : 0x7C3AED);
+    lv_obj_t *buttons[] = {s_record_button, s_new_record_button};
+    for (size_t index = 0; index < sizeof(buttons) / sizeof(buttons[0]); ++index) {
+        lv_obj_set_style_bg_color(buttons[index], color, LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(buttons[index], LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(buttons[index], lv_color_hex(0xDC2626),
+                                  LV_PART_MAIN | LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(buttons[index], LV_OPA_COVER,
+                                LV_PART_MAIN | LV_STATE_PRESSED);
+    }
+}
+
 static void show_answer_panel(bool visible)
 {
     if (visible) {
@@ -220,13 +263,17 @@ static void show_answer_panel(bool visible)
 }
 
 static lv_obj_t *make_action_button(lv_obj_t *screen, lv_coord_t width, lv_coord_t height,
-                                    lv_coord_t x, lv_coord_t y, lv_event_cb_t callback)
+                                    lv_coord_t x, lv_coord_t y,
+                                    discrete_button_state_t *state,
+                                    void (*action)(void))
 {
+    state->armed = false;
+    state->action = action;
     lv_obj_t *button = lv_button_create(screen);
     lv_obj_set_size(button, width, height);
     lv_obj_align(button, LV_ALIGN_TOP_LEFT, x, y);
     lv_obj_set_style_shadow_width(button, 0, 0);
-    lv_obj_add_event_cb(button, callback, LV_EVENT_CLICKED, NULL);
+    lv_obj_add_event_cb(button, discrete_button_event, LV_EVENT_ALL, state);
     return button;
 }
 
@@ -244,13 +291,15 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     lv_obj_set_style_text_color(screen, lv_color_hex(0xF5F7FA), 0);
 
     s_volume_down_button = make_action_button(screen, VOLUME_BUTTON_W, TOP_BUTTON_H,
-                                               SAFE_X, TOP_BUTTON_Y, volume_down_event);
+                                               SAFE_X, TOP_BUTTON_Y,
+                                               &s_volume_down_button_state, volume_down_action);
     lv_obj_t *volume_down_label = lv_label_create(s_volume_down_button);
     lv_label_set_text(volume_down_label, "VOL -");
     lv_obj_center(volume_down_label);
     s_volume_up_button = make_action_button(screen, VOLUME_BUTTON_W, TOP_BUTTON_H,
                                              SAFE_X + VOLUME_BUTTON_W + VOLUME_GAP,
-                                             TOP_BUTTON_Y, volume_up_event);
+                                             TOP_BUTTON_Y,
+                                             &s_volume_up_button_state, volume_up_action);
     lv_obj_t *volume_up_label = lv_label_create(s_volume_up_button);
     lv_label_set_text(volume_up_label, "VOL +");
     lv_obj_center(volume_up_label);
@@ -260,7 +309,7 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     lv_obj_set_style_text_align(s_volume_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(s_volume_label, "VOL --");
     s_audio_button = make_action_button(screen, AUDIO_BUTTON_W, TOP_BUTTON_H, AUDIO_BUTTON_X,
-                                        TOP_BUTTON_Y, audio_event);
+                                        TOP_BUTTON_Y, &s_audio_button_state, audio_action);
     s_audio_label = lv_label_create(s_audio_button);
     lv_obj_center(s_audio_label);
     lv_label_set_text(s_audio_label, "AUDIO");
@@ -290,8 +339,12 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     lv_obj_align(s_record_button, LV_ALIGN_CENTER, 0, RECORD_Y_OFFSET);
     lv_obj_set_style_shadow_width(s_record_button, 0, 0);
     lv_obj_set_style_radius(s_record_button, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(s_record_button, lv_color_hex(0x7C3AED), 0);
-    lv_obj_set_style_bg_color(s_record_button, lv_color_hex(0xDC2626), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(s_record_button, lv_color_hex(0x7C3AED), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_record_button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_record_button, lv_color_hex(0xDC2626),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(s_record_button, LV_OPA_COVER,
+                            LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_add_event_cb(s_record_button, record_event, LV_EVENT_ALL, NULL);
     s_record_label = lv_label_create(s_record_button);
     lv_label_set_text(s_record_label, "MANTENER\nPARA HABLAR");
@@ -320,13 +373,15 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     lv_label_set_long_mode(s_answer, LV_LABEL_LONG_WRAP);
     lv_obj_add_flag(s_answer_panel, LV_OBJ_FLAG_HIDDEN);
 
-    s_retry_button = make_action_button(screen, 130, ACTION_H, SAFE_X, ACTION_Y, retry_event);
+    s_retry_button = make_action_button(screen, 130, ACTION_H, SAFE_X, ACTION_Y,
+                                        &s_retry_button_state, retry_action);
     lv_obj_t *retry_label = lv_label_create(s_retry_button);
     lv_label_set_text(retry_label, "REINTENTAR");
     lv_obj_center(retry_label);
     lv_obj_add_flag(s_retry_button, LV_OBJ_FLAG_HIDDEN);
 
-    s_cancel_button = make_action_button(screen, 130, ACTION_H, SAFE_X, ACTION_Y, cancel_event);
+    s_cancel_button = make_action_button(screen, 130, ACTION_H, SAFE_X, ACTION_Y,
+                                         &s_cancel_button_state, cancel_action);
     lv_obj_t *cancel_label = lv_label_create(s_cancel_button);
     lv_label_set_text(cancel_label, "CANCELAR");
     lv_obj_center(cancel_label);
@@ -336,8 +391,12 @@ int voice_ui_init(const voice_ui_callbacks_t *callbacks)
     lv_obj_set_size(s_new_record_button, 180, ACTION_H);
     lv_obj_align(s_new_record_button, LV_ALIGN_TOP_RIGHT, -SAFE_X, ACTION_Y);
     lv_obj_set_style_shadow_width(s_new_record_button, 0, 0);
-    lv_obj_set_style_bg_color(s_new_record_button, lv_color_hex(0x7C3AED), 0);
-    lv_obj_set_style_bg_color(s_new_record_button, lv_color_hex(0xDC2626), LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(s_new_record_button, lv_color_hex(0x7C3AED), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(s_new_record_button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(s_new_record_button, lv_color_hex(0xDC2626),
+                              LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(s_new_record_button, LV_OPA_COVER,
+                            LV_PART_MAIN | LV_STATE_PRESSED);
     lv_obj_add_event_cb(s_new_record_button, record_event, LV_EVENT_ALL, NULL);
     s_new_record_label = lv_label_create(s_new_record_button);
     lv_label_set_text(s_new_record_label, "NUEVA PREGUNTA");
@@ -356,6 +415,7 @@ void voice_ui_show_idle(bool connected)
     cancel_record_release_timer();
     s_record_gesture_active = false;
     s_record_release_requested = false;
+    set_recording_visual(false);
     s_ui_idle = true;
     show_answer_panel(false);
     lv_label_set_text(s_status, "Listo");
@@ -373,6 +433,7 @@ void voice_ui_show_recording(uint32_t duration_ms, uint8_t level)
              (unsigned long)((duration_ms % 1000) / 100), level);
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(true);
     if (s_recording_from_new_button) {
         lv_obj_add_flag(s_answer_panel, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_record_button, LV_OBJ_FLAG_HIDDEN);
@@ -392,6 +453,7 @@ void voice_ui_show_working(const char *title, const char *detail)
 {
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(false);
     show_answer_panel(false);
     lv_label_set_text(s_status, title);
     lv_label_set_text(s_detail, detail);
@@ -404,6 +466,7 @@ void voice_ui_show_playing(const char *detail)
 {
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(false);
     show_answer_panel(true);
     lv_obj_add_flag(s_new_record_button, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_status, "Reproduciendo");
@@ -419,6 +482,7 @@ void voice_ui_show_response(const char *transcript, const char *answer, bool tru
     snprintf(transcript_text, sizeof(transcript_text), "Vos: %s", transcript);
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(false);
     lv_label_set_text(s_status, "Hermes");
     lv_label_set_text(s_detail, audio_enabled ?
                       (truncated ? "Respuesta abreviada; texto y audio listos" : "Texto y audio listos") :
@@ -435,6 +499,7 @@ void voice_ui_show_audio_error(const char *message)
 {
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(false);
     show_answer_panel(true);
     lv_label_set_text(s_status, "Texto listo");
     lv_label_set_text(s_detail, message != NULL ? message : "Audio no disponible");
@@ -446,6 +511,7 @@ void voice_ui_show_error(const char *message, bool can_retry)
 {
     if (!bsp_display_lock(0)) return;
     s_ui_idle = false;
+    set_recording_visual(false);
     show_answer_panel(false);
     lv_label_set_text(s_status, "No salió");
     lv_label_set_text(s_detail, message != NULL ? message : "Error inesperado");

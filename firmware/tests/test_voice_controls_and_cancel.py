@@ -94,6 +94,17 @@ def test_ui_actions_are_deferred_and_record_gesture_is_debounced() -> None:
     assert "change_volume(10)" in APP
     assert "LV_EVENT_PRESS_LOST" in UI
     assert "LV_EVENT_PRESSING" in UI
+    assert "LV_EVENT_RELEASED" in UI
+    assert "static void discrete_button_event" in UI
+    assert "state->armed = true" in UI
+    assert "state->armed = false" in UI
+    assert "code == LV_EVENT_PRESS_LOST" in UI
+    assert "lv_obj_add_event_cb(button, discrete_button_event, LV_EVENT_ALL, state)" in UI
     assert "RECORD_RELEASE_GRACE_MS 180" in UI
     assert "lv_timer_set_repeat_count" in UI
     assert "Preparando micrófono…" in UI
+    assert "set_recording_visual(true)" in UI
+    assert "LV_OPA_COVER" in UI
+    assert "if (s_record_gesture_active) return;" in UI
+    assert "s_record_release_requested = false;" in UI
+    assert "cancel_record_release_timer();" in UI
