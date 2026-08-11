@@ -19,6 +19,10 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
       - run: uv sync --locked --extra test
       - run: uv run ruff check voice_bridge tests
       - run: uv run pytest -q
